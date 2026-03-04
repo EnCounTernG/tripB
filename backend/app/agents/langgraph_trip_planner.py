@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, TypedDict
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -283,12 +283,18 @@ class LangGraphTripPlanner:
 
         try:
             content = getattr(self.llm.invoke(prompt), "content", "")
-            plan = self._parse_plan(content, request)
+            plan, parse_error = self._parse_plan(content)
+            if plan is None:
+                plan = self._create_data_driven_plan(
+                    request=request,
+                    gathered=gathered,
+                    reason=f"LLM结构化失败: {parse_error or '未知原因'}",
+                )
             if degraded:
                 plan.overall_suggestions = f"{plan.overall_suggestions}\n\n工具降级说明: {'；'.join(degraded)}"
             return {**state, "planner_raw": str(content), "trip_plan": plan}
         except Exception as exc:
-            plan = self._create_fallback_plan(request, f"LLM规划失败: {exc}")
+            plan = self._create_data_driven_plan(request, gathered, f"LLM规划异常: {exc}")
             return {**state, "trip_plan": plan}
 
     def _safe_parse_json(self, text: Any) -> Any:
@@ -312,14 +318,123 @@ class LangGraphTripPlanner:
                 return json.loads(clean[left : right + 1])
         return {}
 
-    def _parse_plan(self, content: Any, request: TripRequest) -> TripPlan:
+    def _parse_plan(self, content: Any) -> Tuple[Optional[TripPlan], Optional[str]]:
         data = self._safe_parse_json(content)
-        if isinstance(data, dict) and data:
-            try:
-                return TripPlan(**data)
-            except Exception:
-                pass
-        return self._create_fallback_plan(request, "JSON解析失败")
+        if not isinstance(data, dict) or not data:
+            return None, "JSON提取失败"
+
+        try:
+            return TripPlan(**data), None
+        except Exception as exc:
+            return None, f"TripPlan校验失败: {exc}"
+
+    def _parse_location(self, location_raw: str) -> Optional[Location]:
+        if not location_raw or "," not in location_raw:
+            return None
+        try:
+            lng_str, lat_str = location_raw.split(",", 1)
+            return Location(longitude=float(lng_str), latitude=float(lat_str))
+        except Exception:
+            return None
+
+    def _extract_poi_attractions(self, gathered: Dict[str, Any], request: TripRequest) -> List[Attraction]:
+        pois = (gathered.get("poi", {}) or {}).get("data", {}).get("pois", [])
+
+        if not pois:
+            backup = self.tool_registry.execute_with_fallback(
+                "map.search_poi",
+                {"city": request.city, "keywords": "景点", "limit": 8},
+            )
+            pois = (backup.get("data", {}) or {}).get("pois", [])
+
+        attractions: List[Attraction] = []
+        for poi in pois:
+            location = self._parse_location(poi.get("location", ""))
+            if not location:
+                continue
+            name = poi.get("name") or "未命名景点"
+            address = poi.get("address") or f"{request.city}市区"
+            attractions.append(
+                Attraction(
+                    name=name,
+                    address=address,
+                    location=location,
+                    visit_duration=120,
+                    description=f"基于地图检索推荐：{name}",
+                    category=poi.get("type") or "景点",
+                )
+            )
+
+        return attractions
+
+    def _create_data_driven_plan(self, request: TripRequest, gathered: Dict[str, Any], reason: str) -> TripPlan:
+        start_date = datetime.strptime(request.start_date, "%Y-%m-%d")
+        attractions_pool = self._extract_poi_attractions(gathered, request)
+        route_info = (gathered.get("route", {}) or {}).get("data", {})
+        weather_forecasts = (gathered.get("weather", {}) or {}).get("data", {}).get("forecasts", [])
+
+        days: List[DayPlan] = []
+        for i in range(request.travel_days):
+            current_date = start_date + timedelta(days=i)
+
+            if attractions_pool:
+                day_attrs = [attractions_pool[i % len(attractions_pool)]]
+            else:
+                day_attrs = [
+                    Attraction(
+                        name=f"{request.city}精选景点{i + 1}",
+                        address=f"{request.city}市区",
+                        location=Location(longitude=116.397128 + i * 0.01, latitude=39.916527 + i * 0.01),
+                        visit_duration=120,
+                        description="未命中可用POI，建议稍后重试",
+                        category="景点",
+                    )
+                ]
+
+            route_summary = ""
+            if route_info:
+                route_summary = f"；参考路线距离{route_info.get('distance', '未知')}米，耗时{route_info.get('duration', '未知')}秒"
+
+            days.append(
+                DayPlan(
+                    date=current_date.strftime("%Y-%m-%d"),
+                    day_index=i,
+                    description=f"第{i + 1}天行程（工具结果保底生成{route_summary}）",
+                    transportation=request.transportation,
+                    accommodation=request.accommodation,
+                    attractions=day_attrs,
+                    meals=[
+                        Meal(type="breakfast", name="早餐", description="酒店附近"),
+                        Meal(type="lunch", name="午餐", description="景区周边"),
+                        Meal(type="dinner", name="晚餐", description="本地餐厅"),
+                    ],
+                )
+            )
+
+        weather_info: List[Dict[str, Any]] = []
+        if weather_forecasts:
+            casts = weather_forecasts[0].get("casts", [])
+            for cast in casts[: request.travel_days]:
+                weather_info.append(
+                    {
+                        "date": cast.get("date", ""),
+                        "day_weather": cast.get("dayweather", ""),
+                        "night_weather": cast.get("nightweather", ""),
+                        "day_temp": cast.get("daytemp", 0),
+                        "night_temp": cast.get("nighttemp", 0),
+                        "wind_direction": cast.get("daywind", ""),
+                        "wind_power": cast.get("daypower", ""),
+                    }
+                )
+
+        return TripPlan(
+            city=request.city,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            days=days,
+            weather_info=weather_info,
+            overall_suggestions=f"系统已基于工具真实结果生成可执行计划。原因: {reason}",
+        )
 
     def _create_fallback_plan(self, request: TripRequest, reason: str) -> TripPlan:
         start_date = datetime.strptime(request.start_date, "%Y-%m-%d")
