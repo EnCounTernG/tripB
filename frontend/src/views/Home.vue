@@ -136,6 +136,18 @@
             </a-col>
 
             <a-col :span="8">
+              <a-form-item name="tool_access">
+                <template #label>
+                  <span class="form-label">工具访问方式</span>
+                </template>
+                <a-select v-model:value="formData.tool_access" size="large" class="custom-select">
+                  <a-select-option value="mcp">🧰 通过MCP工具层（默认）</a-select-option>
+                  <a-select-option value="direct_http">🌐 直连HTTP API（绕过MCP）</a-select-option>
+                </a-select>
+              </a-form-item>
+            </a-col>
+
+            <a-col :span="8">
               <a-form-item name="preferences">
                 <template #label>
                   <span class="form-label">旅行偏好</span>
@@ -237,7 +249,8 @@ const formData = reactive<TripFormData & { start_date: Dayjs | null; end_date: D
   accommodation: '经济型酒店',
   preferences: [],
   free_text_input: '',
-  runtime: 'langgraph'
+  runtime: 'langgraph',
+  tool_access: 'mcp'
 })
 
 // 监听日期变化,自动计算旅行天数
@@ -294,7 +307,8 @@ const handleSubmit = async () => {
       accommodation: formData.accommodation,
       preferences: formData.preferences,
       free_text_input: formData.free_text_input,
-      runtime: formData.runtime
+      runtime: formData.runtime,
+      tool_access: formData.tool_access
     }
 
     const response = await generateTripPlan(requestData)
@@ -660,4 +674,3 @@ const handleSubmit = async () => {
   }
 }
 </style>
-
