@@ -86,6 +86,7 @@ export interface TripFormData {
   preferences: string[]
   free_text_input: string
   runtime?: 'langgraph' | 'helloagents'
+  tool_access?: 'mcp' | 'direct_http'
 }
 
 export interface TripPlanResponse {

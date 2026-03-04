@@ -21,6 +21,10 @@ class TripRequest(BaseModel):
         default="langgraph",
         description="旅行规划运行时,阶段A支持langgraph或helloagents"
     )
+    tool_access: Optional[Literal["mcp", "direct_http"]] = Field(
+        default="mcp",
+        description="工具访问模式: mcp(默认) 或 direct_http(绕过MCP工具层直连高德API)"
+    )
     
     class Config:
         json_schema_extra = {
@@ -33,7 +37,8 @@ class TripRequest(BaseModel):
                 "accommodation": "经济型酒店",
                 "preferences": ["历史文化", "美食"],
                 "free_text_input": "希望多安排一些博物馆",
-                "runtime": "langgraph"
+                "runtime": "langgraph",
+                "tool_access": "mcp"
             }
         }
 

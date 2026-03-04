@@ -280,3 +280,23 @@ npm run dev
 - 后端需注入环境变量：`AMAP_API_KEY`、`LLM_API_KEY`（必填）。
 - 若使用企业模型网关，设置 `LLM_BASE_URL` 与 `LLM_MODEL_ID`。
 - 生产环境建议关闭 `reload`，并通过进程管理器（gunicorn/uvicorn workers）运行。
+
+## 🧩 阶段B改造说明（ReAct + MCP 工具编排 + 可观测日志）
+
+阶段B在 LangGraph 的信息获取阶段引入 ReAct（Thought/Action/Observation）模式，并统一使用 `ToolRegistry` 管理地图能力。
+
+### 新增能力
+
+- 信息获取节点改为 ReAct 循环，按步骤执行 `map.search_poi`、`map.weather`、`map.route`。
+- 不再依赖字符串硬编码工具调用，改用 LangChain Tool Schema + Pydantic 参数校验。
+- 工具层统一支持超时、重试、fallback。
+- 增加工具级错误分类：`rate_limit(429)`、`timeout`、`bad_request`、`server_error`。
+- 记录每一步 action/observation 轨迹并输出日志，便于调试与经验复用。
+- 路线工具会根据前端 `transportation` 自动映射调用：`公共交通->transit`、`自驾->driving`、`步行->walking`、`骑行->riding`；`混合`会额外补充步行路线调用。
+- 前端新增“工具访问方式”选项：
+  - `mcp`：通过 ToolRegistry（默认）
+  - `direct_http`：绕过MCP工具层，直接访问高德HTTP API（用于排障对比）
+
+### 验收覆盖
+
+- 在 `backend/tests/test_tool_registry.py` 中覆盖 3 类错误降级场景：限流、超时、参数错误。
